@@ -1,8 +1,5 @@
-# chatbot/graph.py - Fixed version with proper user ID handling and memory validation
-
-"""Example chatbot that incorporates user memories."""
-
 import datetime
+import asyncio
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional
 
@@ -24,7 +21,13 @@ from langchain_core.runnables import RunnableConfig
 class ChatState:
     """The state of the chatbot."""
     messages: Annotated[list[Messages], add_messages]
-    user_id: Optional[str] = None  # Add user_id to state
+    user_id: Optional[str] = None
+    last_activity_time: Optional[float] = None  # Track last activity timestamp
+    pending_memory_extraction: bool = False  # Flag to track if memory extraction is needed
+
+# Global dictionary to track user activity and pending memory tasks
+user_activity_tracker = {}
+pending_memory_tasks = {}
 
 # Initialize the language model
 llm = init_chat_model()
@@ -61,7 +64,7 @@ def format_memory_item(item) -> tuple[str, str]:
         if hasattr(item, 'namespace') and item.namespace:
             if len(item.namespace) >= 3:
                 memory_type = item.namespace[2]  # Third element is memory type
-        
+       
         # Extract content from the nested structure
         content = ""
         if hasattr(item, 'value') and item.value:
@@ -73,7 +76,7 @@ def format_memory_item(item) -> tuple[str, str]:
                     content = deep_extract_content(item.value)
             else:
                 content = str(item.value)
-        
+       
         return memory_type, content.strip()
     except Exception as e:
         print(f"DEBUG: Error formatting memory item: {e}")
@@ -83,15 +86,15 @@ async def get_all_user_memories(user_id: str, query: str = "") -> Dict[str, List
     """Retrieve all memories for a user, organized by type."""
     store = get_store()
     base_namespace = ("memories", user_id)
-    
+   
     memories_by_type = {}
     memory_types = ["User", "Note", "Action", "Procedural", "Episode"]
-    
+   
     for memory_type in memory_types:
         try:
             namespace = base_namespace + (memory_type,)
             print(f"DEBUG: Searching namespace: {namespace}")
-            
+           
             # Try both query search and list all
             items = []
             if query.strip():
@@ -100,7 +103,7 @@ async def get_all_user_memories(user_id: str, query: str = "") -> Dict[str, List
                     print(f"DEBUG: Query search returned {len(items) if items else 0} items for {memory_type}")
                 except Exception as e:
                     print(f"DEBUG: Query search failed for {memory_type}: {e}")
-            
+           
             # If query search didn't return results, try listing all
             if not items:
                 try:
@@ -108,7 +111,7 @@ async def get_all_user_memories(user_id: str, query: str = "") -> Dict[str, List
                     print(f"DEBUG: List all returned {len(items) if items else 0} items for {memory_type}")
                 except Exception as e:
                     print(f"DEBUG: List all failed for {memory_type}: {e}")
-            
+           
             # Process and store the items
             if items:
                 type_memories = []
@@ -117,15 +120,15 @@ async def get_all_user_memories(user_id: str, query: str = "") -> Dict[str, List
                     if content and content != "None":
                         type_memories.append(content)
                         print(f"DEBUG: Extracted {memory_type} memory: {content[:100]}...")
-                
+               
                 if type_memories:
                     memories_by_type[memory_type] = type_memories
-            
+           
         except Exception as e:
             print(f"DEBUG: Error processing {memory_type} memories: {e}")
             import traceback
             traceback.print_exc()
-    
+   
     return memories_by_type
 
 def determine_user_id(state: ChatState, config: RunnableConfig) -> str:
@@ -135,21 +138,21 @@ def determine_user_id(state: ChatState, config: RunnableConfig) -> str:
     # 2. Config user_id
     # 3. Extract from messages that contain user ID patterns
     # 4. Default fallback
-    
+   
     if state.user_id:
         print(f"DEBUG: Using user_id from state: {state.user_id}")
         return state.user_id
-    
+   
     configurable = ChatConfigurable.from_context(config)
     if configurable.user_id != "default-user":
         print(f"DEBUG: Using user_id from config: {configurable.user_id}")
         return configurable.user_id
-    
+   
     # Try to extract user ID from any message in the conversation
     if state.messages:
         for message in state.messages:
             content = str(message.content) if hasattr(message, 'content') else str(message)
-            
+           
             # Look for explicit user ID patterns first
             import re
             user_id_patterns = [
@@ -158,14 +161,14 @@ def determine_user_id(state: ChatState, config: RunnableConfig) -> str:
                 r"User_(\d+)",  # Specific pattern for User_XXXX format
                 r"user_(\d+)",  # Alternative user_XXXX format
             ]
-            
+           
             for pattern in user_id_patterns:
                 match = re.search(pattern, content, re.IGNORECASE)
                 if match:
                     potential_user_id = match.group(1) if len(match.groups()) == 1 else match.group(0)
                     print(f"DEBUG: Extracted user ID from message: {potential_user_id}")
                     return potential_user_id
-            
+           
             # Fallback to name patterns if no explicit ID found
             name_patterns = [
                 r"my name is (\w+)",
@@ -175,26 +178,102 @@ def determine_user_id(state: ChatState, config: RunnableConfig) -> str:
                 r"it'?s (\w+)",  # Added pattern for "it's Mona"
                 r"hello,?\s+(\w+)",  # Added pattern for "Hello Mona"
             ]
-            
+           
             for pattern in name_patterns:
                 match = re.search(pattern, content.lower())
                 if match:
                     potential_user_id = match.group(1)
                     print(f"DEBUG: Extracted potential user ID from name: {potential_user_id}")
                     return potential_user_id
-    
+   
     print("DEBUG: Using default user ID")
     return "default-user"
+
+def update_user_activity(user_id: str) -> None:
+    """Update the user's last activity timestamp."""
+    import time
+    current_time = time.time()
+    user_activity_tracker[user_id] = current_time
+    print(f"DEBUG: Updated activity for user {user_id} at {current_time}")
+
+def should_extract_memories(user_id: str, inactivity_threshold: int = 30) -> bool:
+    """Check if enough time has passed since last activity to extract memories."""
+    import time
+    current_time = time.time()
+    last_activity = user_activity_tracker.get(user_id, 0)
+    
+    time_since_activity = current_time - last_activity
+    should_extract = time_since_activity >= inactivity_threshold
+    
+    print(f"DEBUG: User {user_id} - Time since activity: {time_since_activity:.1f}s, Threshold: {inactivity_threshold}s, Should extract: {should_extract}")
+    return should_extract
+
+async def cancel_pending_memory_task(user_id: str) -> None:
+    """Cancel any pending memory extraction task for a user."""
+    if user_id in pending_memory_tasks:
+        task = pending_memory_tasks[user_id]
+        if not task.done():
+            task.cancel()
+            print(f"DEBUG: Cancelled pending memory task for user {user_id}")
+        del pending_memory_tasks[user_id]
+
+async def delayed_memory_extraction(user_id: str, messages: list, config: RunnableConfig, delay_seconds: int) -> None:
+    """Execute memory extraction after a delay, checking for new activity."""
+    try:
+        print(f"DEBUG: Starting delayed memory extraction for user {user_id} with {delay_seconds}s delay")
+        await asyncio.sleep(delay_seconds)
+        
+        # Check if there was new activity during the delay
+        if should_extract_memories(user_id, delay_seconds):
+            print(f"DEBUG: Proceeding with memory extraction for user {user_id} - no new activity detected")
+            
+            # Proceed with memory extraction
+            configurable = ChatConfigurable.from_context(config)
+            
+            memory_client = get_client()
+            await memory_client.runs.create(
+                thread_id=config["configurable"]["thread_id"],
+                multitask_strategy="enqueue",
+                assistant_id=configurable.mem_assistant_id,
+                input={"messages": messages},
+                config={
+                    "configurable": {
+                        "user_id": user_id,
+                        "memory_types": configurable.memory_types,
+                    }
+                },
+            )
+            print(f"DEBUG: Memory extraction completed for user {user_id}")
+        else:
+            print(f"DEBUG: Skipping memory extraction for user {user_id} - new activity detected")
+            
+    except asyncio.CancelledError:
+        print(f"DEBUG: Memory extraction task cancelled for user {user_id}")
+    except Exception as e:
+        print(f"ERROR: Failed to extract memories for user {user_id}: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Clean up the task reference
+        if user_id in pending_memory_tasks:
+            del pending_memory_tasks[user_id]
 
 async def handle_user_identification(state: ChatState, config: RunnableConfig) -> dict[str, Any]:
     """Handle user identification and return updated state."""
     user_id = determine_user_id(state, config)
     
+    # Update activity timestamp
+    update_user_activity(user_id)
+   
     if user_id != "default-user":
         print(f"DEBUG: User identified as: {user_id}")
         # Update the state with the identified user
-        new_state = {"user_id": user_id}
-        
+        new_state = {
+            "user_id": user_id,
+            "last_activity_time": user_activity_tracker[user_id],
+            "pending_memory_extraction": False
+        }
+       
         # If this is a new user identification, add a welcome message
         if not state.user_id or state.user_id != user_id:
             from langchain_core.messages import AIMessage
@@ -202,34 +281,37 @@ async def handle_user_identification(state: ChatState, config: RunnableConfig) -
                 content=f"Hello {user_id}! Nice to meet you. How can I help you today?"
             )
             new_state["messages"] = [welcome_msg]
-        
+       
         return new_state
-    
-    return {}
+   
+    return {"last_activity_time": user_activity_tracker.get(user_id, 0)}
 
 async def bot(state: ChatState, config: RunnableConfig) -> dict[str, list[Messages]]:
     """The core chatbot logic: responds to user and incorporates memory."""
     # Determine the user ID for this conversation
     user_id = determine_user_id(state, config)
     
+    # Update activity timestamp
+    update_user_activity(user_id)
+   
     # Update config with the determined user ID
     updated_config = dict(config)
     updated_config["configurable"] = dict(config.get("configurable", {}))
     updated_config["configurable"]["user_id"] = user_id
-    
+   
     configurable = ChatConfigurable.from_context(updated_config)
-    
+   
     print(f"DEBUG: Bot processing for user: {user_id}")
 
     # Get the latest user message for query context
     latest_message = state.messages[-1] if state.messages else ""
     query = str(latest_message.content) if hasattr(latest_message, 'content') else str(latest_message)
-    
+   
     print(f"DEBUG: Processing query for user '{user_id}': {query[:100]}...")
 
     # Get all stored memories - ENSURE we're using the correct user_id
     all_memories = await get_all_user_memories(user_id, query)
-    
+   
     # Search FAISS for episodic memories - ENSURE we're using the correct user_id
     faiss_results = []
     try:
@@ -240,7 +322,7 @@ async def bot(state: ChatState, config: RunnableConfig) -> dict[str, list[Messag
 
     # Build comprehensive memory section
     memory_parts = []
-    
+   
     # Add stored memories by type
     for memory_type, memories in all_memories.items():
         if memories:
@@ -248,7 +330,7 @@ async def bot(state: ChatState, config: RunnableConfig) -> dict[str, list[Messag
             for memory in memories:
                 memory_parts.append(f"- {memory}")
             memory_parts.append("")  # Add spacing
-    
+   
     # Add FAISS memories if available
     if faiss_results:
         memory_parts.append("**Recent Notes from Past Conversations:**")
@@ -273,19 +355,19 @@ async def bot(state: ChatState, config: RunnableConfig) -> dict[str, list[Messag
         # For new users, explicitly state no previous memories
         if user_id != "default-user":
             memory_section = f"\n\n## Your Memory About {user_id}\n\nThis appears to be your first conversation with {user_id}. You have no previous memories about them yet."
-    
+   
     # Compose the system prompt
     prompt = configurable.system_prompt.format(
         user_info=memory_section,
         time=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     )
-    
+   
     print(f"DEBUG: Final system prompt length: {len(prompt)}")
 
     # Prepare messages for LLM
     try:
         messages_for_llm = [{"role": "system", "content": prompt}]
-        
+       
         # Convert state messages to proper format
         for msg in state.messages:
             if hasattr(msg, 'type') and hasattr(msg, 'content'):
@@ -294,106 +376,104 @@ async def bot(state: ChatState, config: RunnableConfig) -> dict[str, list[Messag
             else:
                 # Fallback for other message types
                 messages_for_llm.append({"role": "user", "content": str(msg)})
-        
+       
         print(f"DEBUG: Prepared {len(messages_for_llm)} messages for LLM")
-        
+       
         # Invoke the LLM with updated config
         response = await llm.ainvoke(
             messages_for_llm,
             config={"configurable": {"model": configurable.model}},
         )
-        
+       
         print(f"DEBUG: LLM response generated successfully for user {user_id}")
-        
-        # Return response with updated user_id in state
+       
+        # Return response with updated user_id and activity time in state
         return {
             "messages": [response],
-            "user_id": user_id
+            "user_id": user_id,
+            "last_activity_time": user_activity_tracker[user_id],
+            "pending_memory_extraction": True  # Mark that memory extraction is needed
         }
-        
+       
     except Exception as e:
         print(f"ERROR: Failed to get LLM response for user {user_id}: {e}")
         import traceback
         traceback.print_exc()
-        
+       
         # Return a fallback response
         from langchain_core.messages import AIMessage
         fallback = AIMessage(content="I'm having trouble accessing my memories right now. How can I help you?")
         return {
             "messages": [fallback],
-            "user_id": user_id
+            "user_id": user_id,
+            "last_activity_time": user_activity_tracker[user_id],
+            "pending_memory_extraction": True
         }
 
-async def schedule_memories(state: ChatState, config: RunnableConfig) -> None:
-    """Schedule a memory extraction run to debounce memory formation."""
+async def schedule_memories_with_debouncing(state: ChatState, config: RunnableConfig) -> dict[str, Any]:
+    """Schedule memory extraction with inactivity-based debouncing."""
     # Use the user_id from state if available, otherwise determine it
     user_id = state.user_id or determine_user_id(state, config)
-    
+   
     # Skip memory scheduling for default users or if no real conversation
-    if user_id == "default-user" or not state.messages:
+    if user_id == "default-user" or not state.messages or not state.pending_memory_extraction:
         print(f"DEBUG: Skipping memory extraction for user: {user_id}")
-        return
-    
+        return {}
+   
     # Update config with the correct user ID
     updated_config = dict(config)
     updated_config["configurable"] = dict(config.get("configurable", {}))
     updated_config["configurable"]["user_id"] = user_id
-    
+   
     configurable = ChatConfigurable.from_context(updated_config)
-    
-    print(f"DEBUG: Scheduling memory extraction for user: {user_id}")
+   
+    print(f"DEBUG: Scheduling debounced memory extraction for user: {user_id}")
     print(f"DEBUG: Processing {len(state.messages)} messages")
+   
+    # Cancel any existing pending task for this user
+    await cancel_pending_memory_task(user_id)
     
-    # Print the actual messages being processed
-    for i, msg in enumerate(state.messages):
-        msg_preview = str(msg.content)[:100] if hasattr(msg, 'content') else str(msg)[:100]
-        print(f"DEBUG: Message {i}: {type(msg).__name__} - {msg_preview}")
-
-    try:
-        memory_client = get_client()
-
-        await memory_client.runs.create(
-            thread_id=config["configurable"]["thread_id"],
-            multitask_strategy="enqueue",
-            after_seconds=configurable.delay_seconds,
-            assistant_id=configurable.mem_assistant_id,
-            input={"messages": state.messages},
-            config={
-                "configurable": {
-                    "user_id": user_id,
-                    "memory_types": configurable.memory_types,
-                }
-            },
+    # Create a new delayed memory extraction task
+    task = asyncio.create_task(
+        delayed_memory_extraction(
+            user_id, 
+            state.messages, 
+            updated_config, 
+            configurable.delay_seconds
         )
-        print(f"DEBUG: Memory extraction scheduled successfully for user {user_id}")
-    except Exception as e:
-        print(f"ERROR: Failed to schedule memory extraction for user {user_id}: {e}")
-        import traceback
-        traceback.print_exc()
+    )
+    
+    # Store the task reference
+    pending_memory_tasks[user_id] = task
+    
+    print(f"DEBUG: Scheduled memory extraction task for user {user_id} with {configurable.delay_seconds}s delay")
+    
+    # Return updated state without pending flag
+    return {"pending_memory_extraction": False}
 
 # Debugging function to manually check memories
 async def debug_user_memories(user_id: str):
     """Debug function to inspect all memories for a user."""
     print(f"\n=== DEBUGGING MEMORIES FOR USER: {user_id} ===")
-    
+   
     memories = await get_all_user_memories(user_id)
-    
+   
     if not memories:
         print("No memories found!")
         return
-    
+   
     for memory_type, contents in memories.items():
         print(f"\n{memory_type} ({len(contents)} items):")
         for i, content in enumerate(contents):
             print(f"  {i+1}. {content}")
-    
+   
     print("=== END MEMORY DEBUG ===\n")
 
 # Build the LangGraph agent
 builder = StateGraph(ChatState, config_schema=ChatConfigurable)
 builder.add_node("identify_user", handle_user_identification)
 builder.add_node("bot", bot)
-builder.add_node("schedule_memories", schedule_memories)
+builder.add_node("schedule_memories", schedule_memories_with_debouncing)
 
 # Updated flow to handle user identification first
 builder.add_edge("__start__", "identify_user")
