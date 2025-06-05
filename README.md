@@ -4,7 +4,7 @@ This project implements a robust long-term memory system for conversational agen
 
 ---
 
-## 🚀 Features
+## Features
 
 - **Persistent Memory Storage**: Ensures user-specific memories aren't lost between conversations.
 - **User-Scoped Memory**: Uses `user_id` to namespace memory per user.
@@ -18,13 +18,13 @@ This project implements a robust long-term memory system for conversational agen
 
 ---
 
-## 🎯 Motivation
+## Motivation
 
 As conversational agents become more sophisticated, the ability to remember past interactions and user-specific details is crucial for delivering a truly personalized experience. This project provides a scalable, flexible, and developer-friendly long-term memory system that integrates seamlessly with LangGraph-based agents.
 
 ---
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 The memory system is modular and decouples application flow from memory management:
 
@@ -38,15 +38,15 @@ The memory system is modular and decouples application flow from memory manageme
 
 ---
 
-## 🖼️ Architecture Diagram
+## Output
 
-![Architecture Overview](static/architecture_diagram.png)
+![Overview](static/output.JPG)
 
 *Ensure `static/architecture_diagram.png` exists in the project directory.*
 
 ---
 
-## ⚙️ Setup and Installation
+## Setup and Installation
 
 ```bash
 git clone <repository_url>
@@ -61,8 +61,6 @@ python -m venv venv
 # On Windows
 .\venv\Scripts\activate
 
-# On macOS/Linux
-source venv/bin/activate
 ```
 
 ### Install dependencies
@@ -101,10 +99,8 @@ If using Vertex AI:
 ### Run the application:
 
 ```bash
-python your_main_app_file.py
+langrgaph dev
 ```
-
-Replace `your_main_app_file.py` with your actual entry point script.
 
 ### Interact with the agent:
 
@@ -126,9 +122,9 @@ Logs will show updates like:
 
 ---
 
-## 🧠 Memory Schemas
+## Memory Schemas
 
-### 🟦 User Profile (Semantic Memory)
+### User Profile (Semantic Memory)
 - **update_mode**: `patch`
 - Evolving structured memory per user.
 - Example:
@@ -136,7 +132,7 @@ Logs will show updates like:
 
 ---
 
-### 🟨 Notes (Episodic Memory)
+### Notes (Episodic Memory)
 - **update_mode**: `append`
 - Concise event summaries stored in FAISS.
 - Example:
@@ -144,7 +140,7 @@ Logs will show updates like:
 
 ---
 
-### 🟩 Procedural Memory
+### Procedural Memory
 - **update_mode**: `append`
 - Stores interaction flows or learned agent behavior.
 - Example:
@@ -152,30 +148,9 @@ Logs will show updates like:
 
 ---
 
-## 🗂️ Static Assets
-
-Place images or diagrams in the `/static` folder.
-
-Example Markdown reference:
-```markdown
-![Diagram](static/your_image.png)
-```
-
 ---
 
-## 📄 License
-
-MIT License
-
----
-
-## 🙋‍♀️ Contributions
-
-Feel free to open an issue or submit a PR for bugs, enhancements, or questions.
-
----
-
-## 🔗 Resources
+## Resources
 
 - [LangGraph Documentation](https://docs.langgraph.dev/)
 - [FAISS](https://github.com/facebookresearch/faiss)
