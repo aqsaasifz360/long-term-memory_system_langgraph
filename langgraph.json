@@ -1,0 +1,17 @@
+{
+    "dockerfile_lines": [],
+    "graphs": {
+        "chatbot": "./src/chatbot/graph.py:graph",
+        "memory_graph": "./src/memory_graph/graph.py:graph"
+    },
+    "env": ".env",
+    "python_version": "3.11",
+    "dependencies": ["."],
+    "store": {
+        "ttl": {"default_ttl": 1, "refresh_on_read": false, "sweep_interval_minutes": 1},
+        "index": {
+            "dims": 1536,
+            "embed": "google_vertexai:text-embedding-004"
+        }
+    }
+}
